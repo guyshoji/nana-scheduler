@@ -23,7 +23,8 @@ MAX_HOURS_PER_WEEK = 40
 
 EMPLOYEES = ["Alice", "Ben", "Carla", "Dan", "Elena", "Frank", "Gina", "Hank",
              "Ivy", "Jack", "Kim", "Leo", "Mia", "Noah",
-             "Oscar", "Piper", "Quinn", "Ruby"]
+            #  "Oscar", "Piper", "Quinn", "Ruby", "Sam", "Tom"
+            ]
 
 AVAILABILITY = {
     "Alice":  {(d, s) for d in DAYS for s in SHIFTS},
@@ -40,10 +41,12 @@ AVAILABILITY = {
     "Leo":    {(d, s) for d in ["Sat","Sun"] for s in SHIFTS},
     "Mia":    {(d, s) for d in DAYS for s in SHIFTS},
     "Noah":   {(d, s) for d in DAYS for s in SHIFTS},
-    "Oscar":  {(d, s) for d in DAYS for s in SHIFTS},
-    "Piper":  {(d, s) for d in DAYS for s in SHIFTS},
-    "Quinn":  {(d, s) for d in DAYS for s in SHIFTS},
-    "Ruby":   {(d, s) for d in DAYS for s in SHIFTS},
+    # "Oscar":  {(d, s) for d in DAYS for s in SHIFTS},
+    # "Piper":  {(d, s) for d in DAYS for s in SHIFTS},
+    # "Quinn":  {(d, s) for d in DAYS for s in SHIFTS},
+    # "Ruby":   {(d, s) for d in DAYS for s in SHIFTS},
+    # "Sam":    {(d, s) for d in DAYS for s in SHIFTS},
+    # "Tom":    {(d, s) for d in DAYS for s in SHIFTS}
 }
 
 # --- Build the CP-SAT model ---
@@ -109,6 +112,92 @@ def check_capacity():
     else:
         print(f"✅  {total_supply - total_demand} hours of slack available.")
 
+def check_slot_availability():
+    problems = []
+    for loc in LOCATIONS:
+        for d in DAYS:
+            min_needed, _ = get_staffing_requirement(loc, d)
+            for s in SHIFTS:
+                available_count = sum(
+                    1 for e in EMPLOYEES if (d, s) in AVAILABILITY[e]
+                )
+                if available_count < min_needed:
+                    problems.append(
+                        f"{loc} {d} {s}: needs {min_needed}, only {available_count} employees available"
+                    )
+    if problems:
+        print("⚠️  Slot-level shortages found:")
+        for p in problems:
+            print(f"   - {p}")
+    else:
+        print("✅  Every slot individually has enough available employees.")
+    return problems
+
+def diagnose_infeasibility():
+    print("\n--- Running relaxed diagnostic (allows understaffing, minimizes it) ---\n")
+
+    diag_model = cp_model.CpModel()
+
+    diag_assign = {}
+    for e in EMPLOYEES:
+        for loc in LOCATIONS:
+            for d in DAYS:
+                for s in SHIFTS:
+                    diag_assign[(e, loc, d, s)] = diag_model.NewBoolVar(f"d_{e}_{loc}_{d}_{s}")
+
+    # Same availability + double-booking + hour-cap constraints as before
+    for e in EMPLOYEES:
+        for loc in LOCATIONS:
+            for d in DAYS:
+                for s in SHIFTS:
+                    if (d, s) not in AVAILABILITY[e]:
+                        diag_model.Add(diag_assign[(e, loc, d, s)] == 0)
+
+    for e in EMPLOYEES:
+        for d in DAYS:
+            for s in SHIFTS:
+                diag_model.Add(sum(diag_assign[(e, loc, d, s)] for loc in LOCATIONS) <= 1)
+
+    for e in EMPLOYEES:
+        total_hours = sum(
+            diag_assign[(e, loc, d, s)] * SHIFT_HOURS[s]
+            for loc in LOCATIONS for d in DAYS for s in SHIFTS
+        )
+        diag_model.Add(total_hours <= MAX_HOURS_PER_WEEK)
+
+    # Soft staffing constraint: allow understaffing, track it as "deficit"
+    deficits = {}
+    for loc in LOCATIONS:
+        for d in DAYS:
+            min_needed, max_needed = get_staffing_requirement(loc, d)
+            for s in SHIFTS:
+                deficit = diag_model.NewIntVar(0, min_needed, f"deficit_{loc}_{d}_{s}")
+                deficits[(loc, d, s)] = deficit
+                total_assigned = sum(diag_assign[(e, loc, d, s)] for e in EMPLOYEES)
+                # actual staff + deficit must reach the minimum
+                diag_model.Add(total_assigned + deficit >= min_needed)
+                diag_model.Add(total_assigned <= max_needed)
+
+    # Minimize total understaffing across the whole week
+    diag_model.Minimize(sum(deficits.values()))
+
+    diag_solver = cp_model.CpSolver()
+    diag_status = diag_solver.Solve(diag_model)
+
+    if diag_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        total_deficit = diag_solver.ObjectiveValue()
+        if total_deficit == 0:
+            print("No deficits found — the original problem should actually be feasible. (Check for a bug.)")
+        else:
+            print(f"Best possible schedule is still understaffed by {int(total_deficit)} person-shifts:\n")
+            for (loc, d, s), var in deficits.items():
+                val = diag_solver.Value(var)
+                if val > 0:
+                    label = "person" if val == 1 else "people"
+                    print(f"   - {loc} {d} {s}: short by {val} {label}")
+    else:
+        print("Even the relaxed diagnostic model couldn't solve — something else may be wrong.")
+
 # --- Solve ---
 
 check_capacity()
@@ -125,4 +214,6 @@ if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
                 print(f"  {loc} - {s}: {', '.join(workers) if workers else '(none)'}")
         print()
 else:
-    print("No feasible schedule found.")
+    print("No feasible schedule found.\n")
+    check_slot_availability()
+    diagnose_infeasibility()
