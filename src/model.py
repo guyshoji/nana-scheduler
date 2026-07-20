@@ -3,12 +3,12 @@ from ortools.sat.python import cp_model
 # --- Problem setup ---
 
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-SHIFTS = ["lunch", "dinner"]  # lunch = 11am-5pm (6hrs), dinner = 5pm-9pm (4hrs)
 LOCATIONS = ["Big Stand", "Marina"]
 
-SHIFT_HOURS = {"lunch": 6, "dinner": 4}
+# 10 one-hour slots: 11am-12pm, 12-1pm, ... 8-9pm
+HOURS = list(range(11, 21))  # represents the START hour of each 1-hr slot
 
-# Staffing requirements: (location, day, shift) -> (min_needed, max_needed)
+# Staffing requirements: (location, day) -> (min_needed, max_needed), applied to EVERY hour
 def get_staffing_requirement(location, day):
     is_weekend = day in ("Sat", "Sun")
     if location == "Big Stand":
@@ -19,89 +19,179 @@ def get_staffing_requirement(location, day):
 MAX_HOURS_PER_WEEK = 40
 
 # --- Placeholder employees ---
-# availability[employee] = set of (day, shift) they CAN work
+# availability[employee] = set of (day, hour) they CAN work
 
 EMPLOYEES = ["Alice", "Ben", "Carla", "Dan", "Elena", "Frank", "Gina", "Hank",
              "Ivy", "Jack", "Kim", "Leo", "Mia", "Noah",
-            #  "Oscar", "Piper", "Quinn", "Ruby", "Sam", "Tom"
-            ]
+             "Oscar", "Peter", "Quinn", "Ruby", "Sam", "Tom"
+             ]
 
 AVAILABILITY = {
-    "Alice":  {(d, s) for d in DAYS for s in SHIFTS},
-    "Ben":    {(d, s) for d in ["Mon","Tue","Wed","Thu","Fri"] for s in SHIFTS},
-    "Carla":  {(d, s) for d in DAYS for s in SHIFTS},
-    "Dan":    {(d, s) for d in DAYS for s in SHIFTS},
-    "Elena":  {(d, s) for d in DAYS for s in SHIFTS} - {("Fri","dinner"), ("Sat","dinner")},
-    "Frank":  {(d, s) for d in DAYS for s in SHIFTS},
-    "Gina":   {(d, s) for d in DAYS for s in SHIFTS},
-    "Hank":   {(d, s) for d in DAYS for s in SHIFTS},
-    "Ivy":    {(d, s) for d in DAYS for s in SHIFTS},
-    "Jack":   {(d, s) for d in DAYS for s in SHIFTS},
-    "Kim":    {(d, s) for d in ["Sat","Sun"] for s in SHIFTS},
-    "Leo":    {(d, s) for d in ["Sat","Sun"] for s in SHIFTS},
-    "Mia":    {(d, s) for d in DAYS for s in SHIFTS},
-    "Noah":   {(d, s) for d in DAYS for s in SHIFTS},
-    # "Oscar":  {(d, s) for d in DAYS for s in SHIFTS},
-    # "Piper":  {(d, s) for d in DAYS for s in SHIFTS},
-    # "Quinn":  {(d, s) for d in DAYS for s in SHIFTS},
-    # "Ruby":   {(d, s) for d in DAYS for s in SHIFTS},
-    # "Sam":    {(d, s) for d in DAYS for s in SHIFTS},
-    # "Tom":    {(d, s) for d in DAYS for s in SHIFTS}
+    "Alice":  {(d, h) for d in DAYS for h in HOURS},  # fully available
+    "Ben":    {(d, h) for d in ["Mon","Tue","Wed","Thu","Fri"] for h in HOURS},  # weekdays, all hours
+    "Carla":  {(d, h) for d in DAYS for h in HOURS},
+    "Dan":    {(d, h) for d in DAYS for h in HOURS},
+    "Elena":  {(d, h) for d in DAYS for h in HOURS} - {("Fri", h) for h in range(17, 21)} - {("Sat", h) for h in range(17, 21)},
+    "Frank":  {(d, h) for d in DAYS for h in HOURS},
+    "Gina":   {(d, h) for d in DAYS for h in range(11, 17)},  # mornings/lunch only (11am-5pm)
+    "Hank":   {(d, h) for d in DAYS for h in HOURS},
+    "Ivy":    {(d, h) for d in DAYS for h in range(17, 21)},  # evenings only (5pm-9pm)
+    "Jack":   {(d, h) for d in DAYS for h in HOURS},
+    "Kim":    {(d, h) for d in ["Sat","Sun"] for h in HOURS},
+    "Leo":    {(d, h) for d in ["Sat","Sun"] for h in HOURS},
+    "Mia":    {(d, h) for d in DAYS for h in HOURS},
+    "Noah":   {(d, h) for d in DAYS for h in HOURS},
+    "Oscar":  {(d, h) for d in DAYS for h in HOURS},
+    "Peter":  {(d, h) for d in DAYS for h in HOURS},
+    "Quinn":   {(d, h) for d in DAYS for h in HOURS},
+    "Ruby":   {(d, h) for d in DAYS for h in HOURS},
+    "Sam":    {(d, h) for d in DAYS for h in HOURS},
+    "Tom":    {(d, h) for d in DAYS for h in HOURS}
 }
 
 # --- Build the CP-SAT model ---
 
 model = cp_model.CpModel()
 
-# Decision variable: assign[(employee, location, day, shift)] = 1 if that
-# employee works that location/day/shift, else 0.
+# Decision variable: assign[(employee, location, day, hour)] = 1 if working that hour
 assign = {}
 for e in EMPLOYEES:
     for loc in LOCATIONS:
         for d in DAYS:
-            for s in SHIFTS:
-                assign[(e, loc, d, s)] = model.NewBoolVar(f"assign_{e}_{loc}_{d}_{s}")
+            for h in HOURS:
+                assign[(e, loc, d, h)] = model.NewBoolVar(f"assign_{e}_{loc}_{d}_{h}")
 
-# Constraint: only assign employees to slots they're available for
+# Constraint: only assign employees to hours they're available for
 for e in EMPLOYEES:
     for loc in LOCATIONS:
         for d in DAYS:
-            for s in SHIFTS:
-                if (d, s) not in AVAILABILITY[e]:
-                    model.Add(assign[(e, loc, d, s)] == 0)
+            for h in HOURS:
+                if (d, h) not in AVAILABILITY[e]:
+                    model.Add(assign[(e, loc, d, h)] == 0)
 
-# Constraint: no employee works both locations in the same day/shift
+# Constraint: no employee works both locations in the same hour
 for e in EMPLOYEES:
     for d in DAYS:
-        for s in SHIFTS:
+        for h in HOURS:
             model.Add(
-                sum(assign[(e, loc, d, s)] for loc in LOCATIONS) <= 1
+                sum(assign[(e, loc, d, h)] for loc in LOCATIONS) <= 1
             )
 
-# Constraint: staffing levels per location/day/shift
+# Constraint: staffing levels per location/day/hour
 for loc in LOCATIONS:
     for d in DAYS:
         min_needed, max_needed = get_staffing_requirement(loc, d)
-        for s in SHIFTS:
-            total_assigned = sum(assign[(e, loc, d, s)] for e in EMPLOYEES)
+        for h in HOURS:
+            total_assigned = sum(assign[(e, loc, d, h)] for e in EMPLOYEES)
             model.Add(total_assigned >= min_needed)
             model.Add(total_assigned <= max_needed)
 
-# Constraint: max hours per week per employee
+# Constraint: max hours per week per employee (each slot = 1 hour now)
 for e in EMPLOYEES:
     total_hours = sum(
-        assign[(e, loc, d, s)] * SHIFT_HOURS[s]
-        for loc in LOCATIONS for d in DAYS for s in SHIFTS
+        assign[(e, loc, d, h)]
+        for loc in LOCATIONS for d in DAYS for h in HOURS
     )
     model.Add(total_hours <= MAX_HOURS_PER_WEEK)
+
+# Soft objective: reward longer shift blocks (4+ contiguous hours) and penalize short blocks by minimizing number of shift starts
+working = {}
+
+for e in EMPLOYEES:
+    for d in DAYS:
+        for h in HOURS:
+            working[(e, d, h)] = model.NewBoolVar(f"working_{e}_{d}_{h}")
+            model.Add(
+                working[(e, d, h)] ==
+                sum(assign[(e, loc, d, h)] for loc in LOCATIONS)
+            )
+
+starts = {}
+
+for e in EMPLOYEES:
+    for d in DAYS:
+        for i, h in enumerate(HOURS):
+
+            s = model.NewBoolVar(f"start_{e}_{d}_{h}")
+            starts[(e,d,h)] = s
+
+            if i == 0:
+                model.Add(s == working[(e,d,h)])
+            else:
+                prev = HOURS[i-1]
+
+                # start iff current=1 and previous=0
+                model.Add(s >= working[(e,d,h)] - working[(e,d,prev)])
+                model.Add(s <= working[(e,d,h)])
+                model.Add(s <= 1 - working[(e,d,prev)])
+
+short_shift_penalties = []
+
+for e in EMPLOYEES:
+    for d in DAYS:
+        for i, h in enumerate(HOURS[:-3]):      # only hours with room for 4-hour block
+
+            full4 = model.NewBoolVar(f"full4_{e}_{d}_{h}")
+
+            window = [
+                working[(e,d,HOURS[i+j])]
+                for j in range(4)
+            ]
+
+            # full4 == AND(window)
+            model.AddBoolAnd(window).OnlyEnforceIf(full4)
+            model.AddBoolOr([w.Not() for w in window] + [full4])
+
+            penalty = model.NewBoolVar(f"penalty_{e}_{d}_{h}")
+
+            # penalty if a shift starts but doesn't last 4 hours
+            model.Add(penalty >= starts[(e,d,h)] - full4)
+            model.Add(penalty <= starts[(e,d,h)])
+            model.Add(penalty <= 1 - full4)
+
+            short_shift_penalties.append(penalty)
+
+for e in EMPLOYEES:
+    for d in DAYS:
+        for h in HOURS[-3:]:
+            short_shift_penalties.append(starts[(e,d,h)])
+
+switches = [] # penalize switching between locations
+
+for e in EMPLOYEES:
+    for d in DAYS:
+        for i in range(1, len(HOURS)):
+            h0 = HOURS[i-1]
+            h1 = HOURS[i]
+
+            sw = model.NewBoolVar(f"switch_{e}_{d}_{h1}")
+
+            # True iff Big -> Marina or Marina -> Big
+            b0 = assign[(e, "Big Stand", d, h0)]
+            b1 = assign[(e, "Big Stand", d, h1)]
+
+            # Since there are only two locations and at most one assignment/hour,
+            # a change in the Big Stand assignment indicates a location switch
+            model.Add(sw >= b0 - b1)
+            model.Add(sw >= b1 - b0)
+            model.Add(sw <= b0 + b1)
+            model.Add(sw <= 2 - b0 - b1)
+
+            switches.append(sw)
+
+model.Minimize(
+    100 * sum(switches) +
+    sum(starts.values())
+)
+
+# Infeasibility diagnostics
 
 def check_capacity():
     total_demand = 0
     for loc in LOCATIONS:
         for d in DAYS:
             min_needed, _ = get_staffing_requirement(loc, d)
-            for s in SHIFTS:
-                total_demand += min_needed * SHIFT_HOURS[s]
+            total_demand += min_needed * len(HOURS)
 
     total_supply = len(EMPLOYEES) * MAX_HOURS_PER_WEEK
 
@@ -112,18 +202,19 @@ def check_capacity():
     else:
         print(f"✅  {total_supply - total_demand} hours of slack available.")
 
+
 def check_slot_availability():
     problems = []
     for loc in LOCATIONS:
         for d in DAYS:
             min_needed, _ = get_staffing_requirement(loc, d)
-            for s in SHIFTS:
+            for h in HOURS:
                 available_count = sum(
-                    1 for e in EMPLOYEES if (d, s) in AVAILABILITY[e]
+                    1 for e in EMPLOYEES if (d, h) in AVAILABILITY[e]
                 )
                 if available_count < min_needed:
                     problems.append(
-                        f"{loc} {d} {s}: needs {min_needed}, only {available_count} employees available"
+                        f"{loc} {d} {h}:00: needs {min_needed}, only {available_count} employees available"
                     )
     if problems:
         print("⚠️  Slot-level shortages found:")
@@ -132,6 +223,7 @@ def check_slot_availability():
     else:
         print("✅  Every slot individually has enough available employees.")
     return problems
+
 
 def diagnose_infeasibility():
     print("\n--- Running relaxed diagnostic (allows understaffing, minimizes it) ---\n")
@@ -142,43 +234,39 @@ def diagnose_infeasibility():
     for e in EMPLOYEES:
         for loc in LOCATIONS:
             for d in DAYS:
-                for s in SHIFTS:
-                    diag_assign[(e, loc, d, s)] = diag_model.NewBoolVar(f"d_{e}_{loc}_{d}_{s}")
+                for h in HOURS:
+                    diag_assign[(e, loc, d, h)] = diag_model.NewBoolVar(f"d_{e}_{loc}_{d}_{h}")
 
-    # Same availability + double-booking + hour-cap constraints as before
     for e in EMPLOYEES:
         for loc in LOCATIONS:
             for d in DAYS:
-                for s in SHIFTS:
-                    if (d, s) not in AVAILABILITY[e]:
-                        diag_model.Add(diag_assign[(e, loc, d, s)] == 0)
+                for h in HOURS:
+                    if (d, h) not in AVAILABILITY[e]:
+                        diag_model.Add(diag_assign[(e, loc, d, h)] == 0)
 
     for e in EMPLOYEES:
         for d in DAYS:
-            for s in SHIFTS:
-                diag_model.Add(sum(diag_assign[(e, loc, d, s)] for loc in LOCATIONS) <= 1)
+            for h in HOURS:
+                diag_model.Add(sum(diag_assign[(e, loc, d, h)] for loc in LOCATIONS) <= 1)
 
     for e in EMPLOYEES:
         total_hours = sum(
-            diag_assign[(e, loc, d, s)] * SHIFT_HOURS[s]
-            for loc in LOCATIONS for d in DAYS for s in SHIFTS
+            diag_assign[(e, loc, d, h)]
+            for loc in LOCATIONS for d in DAYS for h in HOURS
         )
         diag_model.Add(total_hours <= MAX_HOURS_PER_WEEK)
 
-    # Soft staffing constraint: allow understaffing, track it as "deficit"
     deficits = {}
     for loc in LOCATIONS:
         for d in DAYS:
             min_needed, max_needed = get_staffing_requirement(loc, d)
-            for s in SHIFTS:
-                deficit = diag_model.NewIntVar(0, min_needed, f"deficit_{loc}_{d}_{s}")
-                deficits[(loc, d, s)] = deficit
-                total_assigned = sum(diag_assign[(e, loc, d, s)] for e in EMPLOYEES)
-                # actual staff + deficit must reach the minimum
+            for h in HOURS:
+                deficit = diag_model.NewIntVar(0, min_needed, f"deficit_{loc}_{d}_{h}")
+                deficits[(loc, d, h)] = deficit
+                total_assigned = sum(diag_assign[(e, loc, d, h)] for e in EMPLOYEES)
                 diag_model.Add(total_assigned + deficit >= min_needed)
                 diag_model.Add(total_assigned <= max_needed)
 
-    # Minimize total understaffing across the whole week
     diag_model.Minimize(sum(deficits.values()))
 
     diag_solver = cp_model.CpSolver()
@@ -189,14 +277,15 @@ def diagnose_infeasibility():
         if total_deficit == 0:
             print("No deficits found — the original problem should actually be feasible. (Check for a bug.)")
         else:
-            print(f"Best possible schedule is still understaffed by {int(total_deficit)} person-shifts:\n")
-            for (loc, d, s), var in deficits.items():
+            print(f"Best possible schedule is still understaffed by {int(total_deficit)} person-hours:\n")
+            for (loc, d, h), var in deficits.items():
                 val = diag_solver.Value(var)
                 if val > 0:
                     label = "person" if val == 1 else "people"
-                    print(f"   - {loc} {d} {s}: short by {val} {label}")
+                    print(f"   - {loc} {d} {h}:00: short by {val} {label}")
     else:
         print("Even the relaxed diagnostic model couldn't solve — something else may be wrong.")
+
 
 # --- Solve ---
 
@@ -209,9 +298,9 @@ if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
     for d in DAYS:
         print(f"=== {d} ===")
         for loc in LOCATIONS:
-            for s in SHIFTS:
-                workers = [e for e in EMPLOYEES if solver.Value(assign[(e, loc, d, s)])]
-                print(f"  {loc} - {s}: {', '.join(workers) if workers else '(none)'}")
+            for h in HOURS:
+                workers = [e for e in EMPLOYEES if solver.Value(assign[(e, loc, d, h)])]
+                print(f"  {loc} - {h}:00: {', '.join(workers) if workers else '(none)'}")
         print()
 else:
     print("No feasible schedule found.\n")
