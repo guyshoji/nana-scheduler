@@ -49,6 +49,29 @@ AVAILABILITY = {
     "Tom":    {(d, h) for d in DAYS for h in HOURS}
 }
 
+LOCATION_PREFERENCE = {
+    "Alice": "Big Stand",
+    "Ben": "Marina",
+    "Carla": "Marina",
+    "Dan": "Marina",
+    "Elena": "Marina",
+    "Frank": "Marina",
+    "Gina": "Marina",
+    "Hank": "Marina",
+    "Ivy": "Marina",
+    "Jack": "Marina",
+    "Kim": "Marina",
+    "Leo": "Marina",
+    "Mia": "Marina",
+    "Noah": "Marina",
+    "Oscar": "Marina",
+    "Peter": "Marina",
+    "Quinn": "Marina",
+    "Ruby": "Marina",
+    "Sam": "Marina",
+    "Tom": "Marina",
+}
+
 # --- Build the CP-SAT model ---
 
 model = cp_model.CpModel()
@@ -179,8 +202,30 @@ for e in EMPLOYEES:
 
             switches.append(sw)
 
+# Soft objective: location preferences
+preference_violations = []
+
+for e in EMPLOYEES:
+    preferred = LOCATION_PREFERENCE[e]
+
+    for d in DAYS:
+        for h in HOURS:
+            for loc in LOCATIONS:
+                if loc != preferred:
+                    # This BoolVar is simply equal to being assigned
+                    # to the non-preferred location.
+                    violation = model.NewBoolVar(
+                        f"pref_violation_{e}_{loc}_{d}_{h}"
+                    )
+
+                    model.Add(violation == assign[(e, loc, d, h)])
+
+                    preference_violations.append(violation)
+
+# Soft objective penalty minimization
 model.Minimize(
     100 * sum(switches) +
+    10 * sum(preference_violations) +
     sum(starts.values())
 )
 
@@ -297,11 +342,75 @@ if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
     print("Schedule found:\n")
     for d in DAYS:
         print(f"=== {d} ===")
+
+        violated_loc_pref = {}
+
         for loc in LOCATIONS:
             for h in HOURS:
-                workers = [e for e in EMPLOYEES if solver.Value(assign[(e, loc, d, h)])]
+                workers = [
+                    e for e in EMPLOYEES
+                    if solver.Value(assign[(e, loc, d, h)])
+                ]
                 print(f"  {loc} - {h}:00: {', '.join(workers) if workers else '(none)'}")
-        print()
+
+        # Check preference violations for this day
+        for e in EMPLOYEES:
+            preferred = LOCATION_PREFERENCE[e]
+
+            for loc in LOCATIONS:
+                if loc == preferred:
+                    continue
+
+                for h in HOURS:
+                    if solver.Value(assign[(e, loc, d, h)]):
+                        violated_loc_pref.setdefault(e, []).append(
+                            f"{h}:00 ({loc})"
+                        )
+                violated = {}
+
+            # Hours worked today at the non-preferred location
+            hours = [
+                h for h in HOURS
+                if solver.Value(assign[(e, loc, d, h)])
+            ]
+
+            if not hours:
+                continue
+
+            # Break into contiguous ranges
+            start = hours[0]
+            prev = hours[0]
+
+            for h in hours[1:] + [None]:
+                if h is None or h != prev + 1:
+                    violated.setdefault(e, []).append(
+                        (loc, start, prev + 1)   # end is exclusive
+                   )
+
+                    if h is not None:
+                        start = h
+
+                if h is not None:
+                    prev = h
+
+    if violated:
+        print("\nLocation preference violations:")
+
+        for e in sorted(violated):
+            print(f"  {e} (prefers {LOCATION_PREFERENCE[e]}):")
+
+            for loc, start, end in violated[e]:
+               print(f"      {start}:00–{end}:00 at {loc}")
+
+        if violated_loc_pref:
+            print("\nLocation preference violations:")
+            for e, shifts in violated_loc_pref.items():
+                print(f"  {e} prefers {LOCATION_PREFERENCE[e]}:")
+                for s in shifts:
+                    print(f"      {s}")
+
+    print()
+        
 else:
     print("No feasible schedule found.\n")
     check_slot_availability()
