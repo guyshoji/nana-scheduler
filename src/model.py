@@ -36,35 +36,50 @@ _staffing = load_staffing_requirements()  # {(location, day): (min, max)}
 def get_staffing_requirement(location, day):
     return _staffing[(location, day)]
 
+def build_assign_vars(m):
+    """Creates the assign[] decision variables for a given model."""
+    a = {}
+    for e in EMPLOYEES:
+        for loc in LOCATIONS:
+            for d in DAYS:
+                for h in HOURS:
+                    a[(e, loc, d, h)] = m.NewBoolVar(f"assign_{e}_{loc}_{d}_{h}")
+    return a
+
+def build_common_constraints(m, a):
+    """Adds availability, no-double-booking, and hour-cap constraints to model m
+    using assign dict a. Shared by the main model and the diagnostic model so
+    they can never drift out of sync."""
+
+    # Availability
+    for e in EMPLOYEES:
+        for loc in LOCATIONS:
+            for d in DAYS:
+                for h in HOURS:
+                    if (d, h) not in AVAILABILITY[e]:
+                        m.Add(a[(e, loc, d, h)] == 0)
+
+    # No double-booking across locations in the same hour
+    for e in EMPLOYEES:
+        for d in DAYS:
+            for h in HOURS:
+                m.Add(sum(a[(e, loc, d, h)] for loc in LOCATIONS) <= 1)
+
+    # Per-employee weekly hour cap
+    for e in EMPLOYEES:
+        total_hours = sum(
+            a[(e, loc, d, h)]
+            for loc in LOCATIONS for d in DAYS for h in HOURS
+        )
+        m.Add(total_hours <= EMPLOYEE_MAX_HOURS[e])
+
 # --- Build the CP-SAT model ---
 
 model = cp_model.CpModel()
+assign = build_assign_vars(model)
+build_common_constraints(model, assign)
 
-# Decision variable: assign[(employee, location, day, hour)] = 1 if working that hour
-assign = {}
-for e in EMPLOYEES:
-    for loc in LOCATIONS:
-        for d in DAYS:
-            for h in HOURS:
-                assign[(e, loc, d, h)] = model.NewBoolVar(f"assign_{e}_{loc}_{d}_{h}")
-
-# Constraint: only assign employees to hours they're available for
-for e in EMPLOYEES:
-    for loc in LOCATIONS:
-        for d in DAYS:
-            for h in HOURS:
-                if (d, h) not in AVAILABILITY[e]:
-                    model.Add(assign[(e, loc, d, h)] == 0)
-
-# Constraint: no employee works both locations in the same hour
-for e in EMPLOYEES:
-    for d in DAYS:
-        for h in HOURS:
-            model.Add(
-                sum(assign[(e, loc, d, h)] for loc in LOCATIONS) <= 1
-            )
-
-# Constraint: staffing levels per location/day/hour
+# Staffing constraint stays separate (hard min/max, specific to the main model)
 for loc in LOCATIONS:
     for d in DAYS:
         min_needed, max_needed = get_staffing_requirement(loc, d)
@@ -72,14 +87,6 @@ for loc in LOCATIONS:
             total_assigned = sum(assign[(e, loc, d, h)] for e in EMPLOYEES)
             model.Add(total_assigned >= min_needed)
             model.Add(total_assigned <= max_needed)
-
-# Constraint: max hours per week per employee (use per-employee cap from DB)
-for e in EMPLOYEES:
-    total_hours = sum(
-        assign[(e, loc, d, h)]
-        for loc in LOCATIONS for d in DAYS for h in HOURS
-    )
-    model.Add(total_hours <= EMPLOYEE_MAX_HOURS[e])
 
 # Soft objective: reward longer shift blocks (4+ contiguous hours) and penalize short blocks by minimizing number of shift starts
 working = {}
@@ -213,7 +220,6 @@ def check_capacity():
     else:
         print(f"✅  {total_supply - total_demand} hours of slack available.")
 
-
 def check_slot_availability():
     problems = []
     for loc in LOCATIONS:
@@ -235,38 +241,14 @@ def check_slot_availability():
         print("✅  Every slot individually has enough available employees.")
     return problems
 
-
 def diagnose_infeasibility():
     print("\n--- Running relaxed diagnostic (allows understaffing, minimizes it) ---\n")
 
     diag_model = cp_model.CpModel()
+    diag_assign = build_assign_vars(diag_model)
+    build_common_constraints(diag_model, diag_assign)
 
-    diag_assign = {}
-    for e in EMPLOYEES:
-        for loc in LOCATIONS:
-            for d in DAYS:
-                for h in HOURS:
-                    diag_assign[(e, loc, d, h)] = diag_model.NewBoolVar(f"d_{e}_{loc}_{d}_{h}")
-
-    for e in EMPLOYEES:
-        for loc in LOCATIONS:
-            for d in DAYS:
-                for h in HOURS:
-                    if (d, h) not in AVAILABILITY[e]:
-                        diag_model.Add(diag_assign[(e, loc, d, h)] == 0)
-
-    for e in EMPLOYEES:
-        for d in DAYS:
-            for h in HOURS:
-                diag_model.Add(sum(diag_assign[(e, loc, d, h)] for loc in LOCATIONS) <= 1)
-
-    for e in EMPLOYEES:
-        total_hours = sum(
-            diag_assign[(e, loc, d, h)]
-            for loc in LOCATIONS for d in DAYS for h in HOURS
-        )
-        diag_model.Add(total_hours <= EMPLOYEE_MAX_HOURS[e])
-
+    # Soft staffing constraint: allow understaffing, track it as deficit
     deficits = {}
     for loc in LOCATIONS:
         for d in DAYS:
