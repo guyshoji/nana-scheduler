@@ -1,4 +1,8 @@
+import sys
+sys.path.append("src/db")
+from data_access import load_employees, load_availability, load_staffing_requirements
 from ortools.sat.python import cp_model
+
 
 # --- Problem setup ---
 
@@ -8,69 +12,27 @@ LOCATIONS = ["Big Stand", "Marina"]
 # 10 one-hour slots: 11am-12pm, 12-1pm, ... 8-9pm
 HOURS = list(range(11, 21))  # represents the START hour of each 1-hr slot
 
-# Staffing requirements: (location, day) -> (min_needed, max_needed), applied to EVERY hour
-def get_staffing_requirement(location, day):
-    is_weekend = day in ("Sat", "Sun")
-    if location == "Big Stand":
-        return (8, 10) if is_weekend else (5, 5)
-    else:  # Marina
-        return (3, 3)
+# # Staffing requirements: (location, day) -> (min_needed, max_needed), applied to EVERY hour
+# def get_staffing_requirement(location, day):
+#     is_weekend = day in ("Sat", "Sun")
+#     if location == "Big Stand":
+#         return (8, 10) if is_weekend else (5, 5)
+#     else:  # Marina
+#         return (3, 3)
 
 MAX_HOURS_PER_WEEK = 40
 
-# --- Placeholder employees ---
-# availability[employee] = set of (day, hour) they CAN work
+# --- Load real data from SQLite ---
+_employees_raw = load_employees()  # list of (id, name, max_hours)
+EMPLOYEES = [name for (_id, name, _max_hrs) in _employees_raw]
+EMPLOYEE_MAX_HOURS = {name: max_hrs for (_id, name, max_hrs) in _employees_raw}
 
-EMPLOYEES = ["Alice", "Ben", "Carla", "Dan", "Elena", "Frank", "Gina", "Hank",
-             "Ivy", "Jack", "Kim", "Leo", "Mia", "Noah",
-             "Oscar", "Peter", "Quinn", "Ruby", "Sam", "Tom"
-             ]
+AVAILABILITY = load_availability()  # {name: {(day, hour), ...}}
 
-AVAILABILITY = {
-    "Alice":  {(d, h) for d in DAYS for h in HOURS},  # fully available
-    "Ben":    {(d, h) for d in ["Mon","Tue","Wed","Thu","Fri"] for h in HOURS},  # weekdays, all hours
-    "Carla":  {(d, h) for d in DAYS for h in HOURS},
-    "Dan":    {(d, h) for d in DAYS for h in HOURS},
-    "Elena":  {(d, h) for d in DAYS for h in HOURS} - {("Fri", h) for h in range(17, 21)} - {("Sat", h) for h in range(17, 21)},
-    "Frank":  {(d, h) for d in DAYS for h in HOURS},
-    "Gina":   {(d, h) for d in DAYS for h in range(11, 17)},  # mornings/lunch only (11am-5pm)
-    "Hank":   {(d, h) for d in DAYS for h in HOURS},
-    "Ivy":    {(d, h) for d in DAYS for h in range(17, 21)},  # evenings only (5pm-9pm)
-    "Jack":   {(d, h) for d in DAYS for h in HOURS},
-    "Kim":    {(d, h) for d in ["Sat","Sun"] for h in HOURS},
-    "Leo":    {(d, h) for d in ["Sat","Sun"] for h in HOURS},
-    "Mia":    {(d, h) for d in DAYS for h in HOURS},
-    "Noah":   {(d, h) for d in DAYS for h in HOURS},
-    "Oscar":  {(d, h) for d in DAYS for h in HOURS},
-    "Peter":  {(d, h) for d in DAYS for h in HOURS},
-    "Quinn":   {(d, h) for d in DAYS for h in HOURS},
-    "Ruby":   {(d, h) for d in DAYS for h in HOURS},
-    "Sam":    {(d, h) for d in DAYS for h in HOURS},
-    "Tom":    {(d, h) for d in DAYS for h in HOURS}
-}
+_staffing = load_staffing_requirements()  # {(location, day): (min, max)}
 
-LOCATION_PREFERENCE = {
-    "Alice": "Big Stand",
-    "Ben": "Marina",
-    "Carla": "Marina",
-    "Dan": "Marina",
-    "Elena": "Marina",
-    "Frank": "Marina",
-    "Gina": "Marina",
-    "Hank": "Marina",
-    "Ivy": "Marina",
-    "Jack": "Marina",
-    "Kim": "Marina",
-    "Leo": "Marina",
-    "Mia": "Marina",
-    "Noah": "Marina",
-    "Oscar": "Marina",
-    "Peter": "Marina",
-    "Quinn": "Marina",
-    "Ruby": "Marina",
-    "Sam": "Marina",
-    "Tom": "Marina",
-}
+def get_staffing_requirement(location, day):
+    return _staffing[(location, day)]
 
 # --- Build the CP-SAT model ---
 
@@ -109,13 +71,13 @@ for loc in LOCATIONS:
             model.Add(total_assigned >= min_needed)
             model.Add(total_assigned <= max_needed)
 
-# Constraint: max hours per week per employee (each slot = 1 hour now)
+# Constraint: max hours per week per employee (use per-employee cap from DB)
 for e in EMPLOYEES:
     total_hours = sum(
         assign[(e, loc, d, h)]
         for loc in LOCATIONS for d in DAYS for h in HOURS
     )
-    model.Add(total_hours <= MAX_HOURS_PER_WEEK)
+    model.Add(total_hours <= EMPLOYEE_MAX_HOURS[e])
 
 # Soft objective: reward longer shift blocks (4+ contiguous hours) and penalize short blocks by minimizing number of shift starts
 working = {}
@@ -238,7 +200,11 @@ def check_capacity():
             min_needed, _ = get_staffing_requirement(loc, d)
             total_demand += min_needed * len(HOURS)
 
-    total_supply = len(EMPLOYEES) * MAX_HOURS_PER_WEEK
+    for e in EMPLOYEES:
+        total_supply = sum(
+            assign[(e, loc, d, h)]
+            for loc in LOCATIONS for d in DAYS for h in HOURS
+        )
 
     print(f"Minimum hours demanded: {total_demand}")
     print(f"Maximum hours available: {total_supply}")
@@ -296,10 +262,10 @@ def diagnose_infeasibility():
 
     for e in EMPLOYEES:
         total_hours = sum(
-            diag_assign[(e, loc, d, h)]
+            assign[(e, loc, d, h)]
             for loc in LOCATIONS for d in DAYS for h in HOURS
         )
-        diag_model.Add(total_hours <= MAX_HOURS_PER_WEEK)
+        model.Add(total_hours <= EMPLOYEE_MAX_HOURS[e])
 
     deficits = {}
     for loc in LOCATIONS:

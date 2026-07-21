@@ -14,6 +14,15 @@ CREATE TABLE availability (
     FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE
 );
 
+CREATE TABLE location_preferences (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id INTEGER NOT NULL,
+    location TEXT NOT NULL,
+    preference_score INTEGER NOT NULL DEFAULT 0,  -- higher = more preferred
+    FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE,
+    UNIQUE (employee_id, location)  -- one preference row per employee/location pair
+);
+
 CREATE TABLE staffing_requirements (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     location TEXT NOT NULL,
