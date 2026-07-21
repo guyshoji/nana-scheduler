@@ -1,6 +1,6 @@
 import sys
 sys.path.append("src/db")
-from data_access import load_employees, load_availability, load_staffing_requirements
+from data_access import load_employees, load_availability, load_staffing_requirements, load_location_preferences
 from ortools.sat.python import cp_model
 
 
@@ -28,6 +28,8 @@ EMPLOYEES = [name for (_id, name, _max_hrs) in _employees_raw]
 EMPLOYEE_MAX_HOURS = {name: max_hrs for (_id, name, max_hrs) in _employees_raw}
 
 AVAILABILITY = load_availability()  # {name: {(day, hour), ...}}
+
+LOCATION_PREFERENCES = load_location_preferences()  # {(employee, location): score}
 
 _staffing = load_staffing_requirements()  # {(location, day): (min, max)}
 
@@ -141,7 +143,8 @@ for e in EMPLOYEES:
         for h in HOURS[-3:]:
             short_shift_penalties.append(starts[(e,d,h)])
 
-switches = [] # penalize switching between locations
+# Soft objective: penalize switching between locations within a day
+switches = []
 
 for e in EMPLOYEES:
     for d in DAYS:
@@ -151,12 +154,9 @@ for e in EMPLOYEES:
 
             sw = model.NewBoolVar(f"switch_{e}_{d}_{h1}")
 
-            # True iff Big -> Marina or Marina -> Big
             b0 = assign[(e, "Big Stand", d, h0)]
             b1 = assign[(e, "Big Stand", d, h1)]
 
-            # Since there are only two locations and at most one assignment/hour,
-            # a change in the Big Stand assignment indicates a location switch
             model.Add(sw >= b0 - b1)
             model.Add(sw >= b1 - b0)
             model.Add(sw <= b0 + b1)
@@ -164,32 +164,36 @@ for e in EMPLOYEES:
 
             switches.append(sw)
 
-# Soft objective: location preferences
-preference_violations = []
+# Soft objective: location preference penalty (scaled by preference score gap)
+LOCATION_PREFERENCES = load_location_preferences()  # {(employee, location): score}
+
+# For each employee, find their best possible score across locations —
+# this is the "no penalty" baseline for that employee
+best_score = {}
+for e in EMPLOYEES:
+    best_score[e] = max(
+        LOCATION_PREFERENCES.get((e, loc), 0) for loc in LOCATIONS
+    )
+
+preference_penalty_terms = []
 
 for e in EMPLOYEES:
-    preferred = LOCATION_PREFERENCE[e]
+    for loc in LOCATIONS:
+        score = LOCATION_PREFERENCES.get((e, loc), 0)
+        gap = best_score[e] - score  # 0 if this IS their best location, positive otherwise
 
-    for d in DAYS:
-        for h in HOURS:
-            for loc in LOCATIONS:
-                if loc != preferred:
-                    # This BoolVar is simply equal to being assigned
-                    # to the non-preferred location.
-                    violation = model.NewBoolVar(
-                        f"pref_violation_{e}_{loc}_{d}_{h}"
-                    )
+        if gap > 0:
+            for d in DAYS:
+                for h in HOURS:
+                    preference_penalty_terms.append(assign[(e, loc, d, h)] * gap)
 
-                    model.Add(violation == assign[(e, loc, d, h)])
-
-                    preference_violations.append(violation)
-
-# Soft objective penalty minimization
+# Combined soft objective
 model.Minimize(
     100 * sum(switches) +
-    10 * sum(preference_violations) +
+    10 * sum(preference_penalty_terms) +
     sum(starts.values())
 )
+
 
 # Infeasibility diagnostics
 
@@ -200,11 +204,7 @@ def check_capacity():
             min_needed, _ = get_staffing_requirement(loc, d)
             total_demand += min_needed * len(HOURS)
 
-    for e in EMPLOYEES:
-        total_supply = sum(
-            assign[(e, loc, d, h)]
-            for loc in LOCATIONS for d in DAYS for h in HOURS
-        )
+    total_supply = sum(EMPLOYEE_MAX_HOURS[e] for e in EMPLOYEES)
 
     print(f"Minimum hours demanded: {total_demand}")
     print(f"Maximum hours available: {total_supply}")
@@ -262,10 +262,10 @@ def diagnose_infeasibility():
 
     for e in EMPLOYEES:
         total_hours = sum(
-            assign[(e, loc, d, h)]
+            diag_assign[(e, loc, d, h)]
             for loc in LOCATIONS for d in DAYS for h in HOURS
         )
-        model.Add(total_hours <= EMPLOYEE_MAX_HOURS[e])
+        diag_model.Add(total_hours <= EMPLOYEE_MAX_HOURS[e])
 
     deficits = {}
     for loc in LOCATIONS:

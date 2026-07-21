@@ -29,6 +29,17 @@ def load_availability():
         availability.setdefault(name, set()).add((day, hour))
     return availability
 
+def load_location_preferences():
+    conn = get_connection()
+    cur = conn.execute("SELECT e.name, lp.location, lp.preference_score FROM location_preferences lp JOIN employees e ON lp.employee_id = e.id")
+    rows = cur.fetchall()
+    conn.close()
+
+    preferences = {}
+    for name, location, score in rows:
+        preferences[(name, location)] = score
+    return preferences
+
 def load_staffing_requirements():
     conn = get_connection()
     cur = conn.execute("SELECT location, day, min_needed, max_needed FROM staffing_requirements")
