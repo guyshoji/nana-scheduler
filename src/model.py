@@ -133,25 +133,25 @@ def build_main_model(data):
                     model.Add(s <= working[(e, d, h)])
                     model.Add(s <= 1 - working[(e, d, prev)])
 
-    # short_shift_penalties = []
-    # for e in employees:
-    #     for d in DAYS:
-    #         for i, h in enumerate(HOURS[:-3]):
-    #             full4 = model.NewBoolVar(f"full4_{e}_{d}_{h}")
-    #             window = [working[(e, d, HOURS[i + j])] for j in range(4)]
-    #             model.AddBoolAnd(window).OnlyEnforceIf(full4)
-    #             model.AddBoolOr([w.Not() for w in window] + [full4])
+    short_shift_penalties = []
+    for e in employees:
+        for d in DAYS:
+            for i, h in enumerate(HOURS[:-3]):
+                full4 = model.NewBoolVar(f"full4_{e}_{d}_{h}")
+                window = [working[(e, d, HOURS[i + j])] for j in range(4)]
+                model.AddBoolAnd(window).OnlyEnforceIf(full4)
+                model.AddBoolOr([w.Not() for w in window] + [full4])
 
-    #             penalty = model.NewBoolVar(f"penalty_{e}_{d}_{h}")
-    #             model.Add(penalty >= starts[(e, d, h)] - full4)
-    #             model.Add(penalty <= starts[(e, d, h)])
-    #             model.Add(penalty <= 1 - full4)
-    #             short_shift_penalties.append(penalty)
+                penalty = model.NewBoolVar(f"penalty_{e}_{d}_{h}")
+                model.Add(penalty >= starts[(e, d, h)] - full4)
+                model.Add(penalty <= starts[(e, d, h)])
+                model.Add(penalty <= 1 - full4)
+                short_shift_penalties.append(penalty)
 
-    # for e in employees:
-    #     for d in DAYS:
-    #         for h in HOURS[-3:]:
-    #             short_shift_penalties.append(starts[(e, d, h)])
+    for e in employees:
+        for d in DAYS:
+            for h in HOURS[-3:]:
+                short_shift_penalties.append(starts[(e, d, h)])
 
     # Soft objective: penalize switching locations within a day
     switches = []
@@ -301,6 +301,8 @@ def solve_schedule():
     model, assign = build_main_model(data)
 
     solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = 10
+    solver.parameters.num_search_workers = 8
     status = solver.Solve(model)
 
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
