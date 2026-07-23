@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Staffing Requirements</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        table { border-collapse: collapse; margin-bottom: 30px; }
+        th, td { border: 1px solid #ccc; padding: 4px 8px; text-align: center; font-size: 12px; }
+        th { background: #eee; }
+        input[type=number] { width: 40px; }
+        .top-nav { margin-bottom: 20px; }
+        h2 { margin-top: 30px; }
+    </style>
+</head>
+<body>
+    <div class="top-nav">
+        <a href="/">View Schedule</a> |
+        <a href="/manage">Manage Employees</a> |
+        <strong>Staffing Requirements</strong>
+    </div>
+
+    <h1>Staffing Requirements</h1>
+    <p>Set the minimum number of staff needed per hour at each location.</p>
+
+    <form method="POST" action="/staffing">
+        {% for loc in locations %}
+        <h2>{{ loc }}</h2>
+        <table>
+            <tr>
+                <th>Hour</th>
+                {% for d in days %}<th>{{ d }}</th>{% endfor %}
+            </tr>
+            {% for h in hours %}
+            <tr>
+                <td>{{ h | format_hour }}</td>
+                {% for d in days %}
+                <td>
+                    <input type="number" name="min_{{ loc }}_{{ d }}_{{ h }}"
+                        value="{{ requirements.get((loc, d, h), 0) }}" min="0" max="20">
+                </td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </table>
+        {% endfor %}
+
+        <br>
+        <button type="submit">Save Requirements</button>
+    </form>
+</body>
+</html>

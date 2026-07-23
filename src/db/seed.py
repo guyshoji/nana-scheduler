@@ -30,6 +30,12 @@ def seed():
         "Leo":    {(d, h) for d in ["Sat","Sun"] for h in HOURS},
         "Mia":    {(d, h) for d in DAYS for h in HOURS},
         "Noah":   {(d, h) for d in DAYS for h in HOURS},
+        "Oscar":  {(d, h) for d in DAYS for h in HOURS},
+        "Peter":  {(d, h) for d in DAYS for h in HOURS},
+        "Quinn":  {(d, h) for d in DAYS for h in HOURS},
+        "Ruby":   {(d, h) for d in DAYS for h in HOURS},
+        "Sam":    {(d, h) for d in DAYS for h in HOURS},
+        "Tom":    {(d, h) for d in DAYS for h in HOURS}
     }
 
     for name, avail in employee_availability.items():

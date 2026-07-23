@@ -1,217 +1,215 @@
 import sys
 sys.path.append("src/db")
-from data_access import load_employees, load_availability, load_staffing_requirements, load_location_preferences
+from data_access import load_employees, load_availability, load_staffing_requirements, load_location_preferences, load_moppers
 from ortools.sat.python import cp_model
 
 
-# --- Problem setup ---
+# --- Problem setup (static, safe as module-level) ---
 
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 LOCATIONS = ["Big Stand", "Marina"]
+HOURS = list(range(11, 23))  # start hour of each 1-hr slot
 
-# 10 one-hour slots: 11am-12pm, 12-1pm, ... 8-9pm
-HOURS = list(range(11, 21))  # represents the START hour of each 1-hr slot
 
-# # Staffing requirements: (location, day) -> (min_needed, max_needed), applied to EVERY hour
-# def get_staffing_requirement(location, day):
-#     is_weekend = day in ("Sat", "Sun")
-#     if location == "Big Stand":
-#         return (8, 10) if is_weekend else (5, 5)
-#     else:  # Marina
-#         return (3, 3)
-
-MAX_HOURS_PER_WEEK = 40
-
-# --- Load real data from SQLite ---
-_employees_raw = load_employees()  # list of (id, name, max_hours)
-EMPLOYEES = [name for (_id, name, _max_hrs) in _employees_raw]
-EMPLOYEE_MAX_HOURS = {name: max_hrs for (_id, name, max_hrs) in _employees_raw}
-
-AVAILABILITY = load_availability()  # {name: {(day, hour), ...}}
-
-LOCATION_PREFERENCES = load_location_preferences()  # {(employee, location): score}
-
-_staffing = load_staffing_requirements()  # {(location, day): (min, max)}
-
-def get_staffing_requirement(location, day):
-    return _staffing[(location, day)]
-
-def build_assign_vars(m):
-    """Creates the assign[] decision variables for a given model."""
+def build_assign_vars(m, employees):
     a = {}
-    for e in EMPLOYEES:
+    for e in employees:
         for loc in LOCATIONS:
             for d in DAYS:
                 for h in HOURS:
                     a[(e, loc, d, h)] = m.NewBoolVar(f"assign_{e}_{loc}_{d}_{h}")
     return a
 
-def build_common_constraints(m, a):
-    """Adds availability, no-double-booking, and hour-cap constraints to model m
-    using assign dict a. Shared by the main model and the diagnostic model so
-    they can never drift out of sync."""
 
-    # Availability
-    for e in EMPLOYEES:
+def build_common_constraints(m, a, employees, availability, employee_max_hours):
+    """Adds availability, no-double-booking, and hour-cap constraints to model m."""
+    for e in employees:
         for loc in LOCATIONS:
             for d in DAYS:
                 for h in HOURS:
-                    if (d, h) not in AVAILABILITY[e]:
+                    if (d, h) not in availability[e]:
                         m.Add(a[(e, loc, d, h)] == 0)
 
-    # No double-booking across locations in the same hour
-    for e in EMPLOYEES:
+    for e in employees:
         for d in DAYS:
             for h in HOURS:
                 m.Add(sum(a[(e, loc, d, h)] for loc in LOCATIONS) <= 1)
 
-    # Per-employee weekly hour cap
-    for e in EMPLOYEES:
+    for e in employees:
         total_hours = sum(
             a[(e, loc, d, h)]
             for loc in LOCATIONS for d in DAYS for h in HOURS
         )
-        m.Add(total_hours <= EMPLOYEE_MAX_HOURS[e])
+        m.Add(total_hours <= employee_max_hours[e])
 
-# --- Build the CP-SAT model ---
+    for e in employees:
+        for d in DAYS:
+            daily_hours = sum(
+                a[(e, loc, d, h)]
+                for loc in LOCATIONS for h in HOURS
+            )
+            m.Add(daily_hours <= 6)
 
-model = cp_model.CpModel()
-assign = build_assign_vars(model)
-build_common_constraints(model, assign)
+def load_fresh_data():
+    """Pulls current state from SQLite. Call this at the start of every solve/diagnostic."""
+    employees_raw = load_employees()
+    employees = [name for (_id, name, _max_hrs, _is_mopper) in employees_raw]
+    employee_max_hours = {name: max_hrs for (_id, name, max_hrs, _is_mopper) in employees_raw}
+    availability = load_availability()
+    location_preferences = load_location_preferences()
+    staffing = load_staffing_requirements()
+    moppers = load_moppers()
 
-# Staffing constraint stays separate (hard min/max, specific to the main model)
-for loc in LOCATIONS:
-    for d in DAYS:
-        min_needed, max_needed = get_staffing_requirement(loc, d)
-        for h in HOURS:
-            total_assigned = sum(assign[(e, loc, d, h)] for e in EMPLOYEES)
-            model.Add(total_assigned >= min_needed)
-            model.Add(total_assigned <= max_needed)
+    def get_staffing_requirement(location, day, hour):
+        return staffing.get((location, day, hour), (0, 0))
 
-# Soft objective: reward longer shift blocks (4+ contiguous hours) and penalize short blocks by minimizing number of shift starts
-working = {}
+    return {
+        "employees": employees,
+        "employee_max_hours": employee_max_hours,
+        "availability": availability,
+        "location_preferences": location_preferences,
+        "get_staffing_requirement": get_staffing_requirement,
+        "moppers": moppers,
+    }
 
-for e in EMPLOYEES:
-    for d in DAYS:
-        for h in HOURS:
-            working[(e, d, h)] = model.NewBoolVar(f"working_{e}_{d}_{h}")
+
+def build_main_model(data):
+    """Builds the full model + objective. Returns (model, assign)."""
+    employees = data["employees"]
+    availability = data["availability"]
+    employee_max_hours = data["employee_max_hours"]
+    location_preferences = data["location_preferences"]
+    get_staffing_requirement = data["get_staffing_requirement"]
+
+    model = cp_model.CpModel()
+    assign = build_assign_vars(model, employees)
+    build_common_constraints(model, assign, employees, availability, employee_max_hours)
+
+    # Staffing constraint
+    for loc in LOCATIONS:
+        for d in DAYS:
+            for h in HOURS:
+                min_needed = get_staffing_requirement(loc, d, h)
+                total_assigned = sum(assign[(e, loc, d, h)] for e in employees)
+                model.Add(total_assigned >= min_needed)
+
+    # Hard constraint: at least one mopper must work the closing hour at Big Stand each day
+    moppers = data["moppers"]
+    closing_hour = HOURS[-1]
+    mopper_list = [e for e in employees if e in moppers]
+
+    if mopper_list:
+        for d in DAYS:
             model.Add(
-                working[(e, d, h)] ==
-                sum(assign[(e, loc, d, h)] for loc in LOCATIONS)
+                sum(
+                    assign[(e, "Big Stand", d, closing_hour)]
+                    for e in mopper_list
+                ) >= 1
             )
 
-starts = {}
+    # Soft objective: reward 4+ hour contiguous blocks, penalize short ones
+    working = {}
+    for e in employees:
+        for d in DAYS:
+            for h in HOURS:
+                working[(e, d, h)] = model.NewBoolVar(f"working_{e}_{d}_{h}")
+                model.Add(
+                    working[(e, d, h)] ==
+                    sum(assign[(e, loc, d, h)] for loc in LOCATIONS)
+                )
 
-for e in EMPLOYEES:
-    for d in DAYS:
-        for i, h in enumerate(HOURS):
+    # Soft objective: minimize number of starts
+    starts = {}
+    for e in employees:
+        for d in DAYS:
+            for i, h in enumerate(HOURS):
+                s = model.NewBoolVar(f"start_{e}_{d}_{h}")
+                starts[(e, d, h)] = s
+                if i == 0:
+                    model.Add(s == working[(e, d, h)])
+                else:
+                    prev = HOURS[i - 1]
+                    model.Add(s >= working[(e, d, h)] - working[(e, d, prev)])
+                    model.Add(s <= working[(e, d, h)])
+                    model.Add(s <= 1 - working[(e, d, prev)])
 
-            s = model.NewBoolVar(f"start_{e}_{d}_{h}")
-            starts[(e,d,h)] = s
+    # short_shift_penalties = []
+    # for e in employees:
+    #     for d in DAYS:
+    #         for i, h in enumerate(HOURS[:-3]):
+    #             full4 = model.NewBoolVar(f"full4_{e}_{d}_{h}")
+    #             window = [working[(e, d, HOURS[i + j])] for j in range(4)]
+    #             model.AddBoolAnd(window).OnlyEnforceIf(full4)
+    #             model.AddBoolOr([w.Not() for w in window] + [full4])
 
-            if i == 0:
-                model.Add(s == working[(e,d,h)])
-            else:
-                prev = HOURS[i-1]
+    #             penalty = model.NewBoolVar(f"penalty_{e}_{d}_{h}")
+    #             model.Add(penalty >= starts[(e, d, h)] - full4)
+    #             model.Add(penalty <= starts[(e, d, h)])
+    #             model.Add(penalty <= 1 - full4)
+    #             short_shift_penalties.append(penalty)
 
-                # start iff current=1 and previous=0
-                model.Add(s >= working[(e,d,h)] - working[(e,d,prev)])
-                model.Add(s <= working[(e,d,h)])
-                model.Add(s <= 1 - working[(e,d,prev)])
+    # for e in employees:
+    #     for d in DAYS:
+    #         for h in HOURS[-3:]:
+    #             short_shift_penalties.append(starts[(e, d, h)])
 
-short_shift_penalties = []
+    # Soft objective: penalize switching locations within a day
+    switches = []
+    for e in employees:
+        for d in DAYS:
+            for i in range(1, len(HOURS)):
+                h0 = HOURS[i - 1]
+                h1 = HOURS[i]
+                sw = model.NewBoolVar(f"switch_{e}_{d}_{h1}")
+                b0 = assign[(e, "Big Stand", d, h0)]
+                b1 = assign[(e, "Big Stand", d, h1)]
+                model.Add(sw >= b0 - b1)
+                model.Add(sw >= b1 - b0)
+                model.Add(sw <= b0 + b1)
+                model.Add(sw <= 2 - b0 - b1)
+                switches.append(sw)
 
-for e in EMPLOYEES:
-    for d in DAYS:
-        for i, h in enumerate(HOURS[:-3]):      # only hours with room for 4-hour block
+    # Soft objective: location preference penalty
+    best_score = {}
+    for e in employees:
+        best_score[e] = max(
+            location_preferences.get((e, loc), 0) for loc in LOCATIONS
+        )
 
-            full4 = model.NewBoolVar(f"full4_{e}_{d}_{h}")
+    preference_penalty_terms = []
+    for e in employees:
+        for loc in LOCATIONS:
+            score = location_preferences.get((e, loc), 0)
+            gap = best_score[e] - score
+            if gap > 0:
+                for d in DAYS:
+                    for h in HOURS:
+                        preference_penalty_terms.append(assign[(e, loc, d, h)] * gap)
 
-            window = [
-                working[(e,d,HOURS[i+j])]
-                for j in range(4)
-            ]
-
-            # full4 == AND(window)
-            model.AddBoolAnd(window).OnlyEnforceIf(full4)
-            model.AddBoolOr([w.Not() for w in window] + [full4])
-
-            penalty = model.NewBoolVar(f"penalty_{e}_{d}_{h}")
-
-            # penalty if a shift starts but doesn't last 4 hours
-            model.Add(penalty >= starts[(e,d,h)] - full4)
-            model.Add(penalty <= starts[(e,d,h)])
-            model.Add(penalty <= 1 - full4)
-
-            short_shift_penalties.append(penalty)
-
-for e in EMPLOYEES:
-    for d in DAYS:
-        for h in HOURS[-3:]:
-            short_shift_penalties.append(starts[(e,d,h)])
-
-# Soft objective: penalize switching between locations within a day
-switches = []
-
-for e in EMPLOYEES:
-    for d in DAYS:
-        for i in range(1, len(HOURS)):
-            h0 = HOURS[i-1]
-            h1 = HOURS[i]
-
-            sw = model.NewBoolVar(f"switch_{e}_{d}_{h1}")
-
-            b0 = assign[(e, "Big Stand", d, h0)]
-            b1 = assign[(e, "Big Stand", d, h1)]
-
-            model.Add(sw >= b0 - b1)
-            model.Add(sw >= b1 - b0)
-            model.Add(sw <= b0 + b1)
-            model.Add(sw <= 2 - b0 - b1)
-
-            switches.append(sw)
-
-# Soft objective: location preference penalty (scaled by preference score gap)
-LOCATION_PREFERENCES = load_location_preferences()  # {(employee, location): score}
-
-# For each employee, find their best possible score across locations —
-# this is the "no penalty" baseline for that employee
-best_score = {}
-for e in EMPLOYEES:
-    best_score[e] = max(
-        LOCATION_PREFERENCES.get((e, loc), 0) for loc in LOCATIONS
+    model.Minimize(
+        100 * sum(switches) +
+        10 * sum(preference_penalty_terms) +
+        sum(starts.values())
     )
 
-preference_penalty_terms = []
-
-for e in EMPLOYEES:
-    for loc in LOCATIONS:
-        score = LOCATION_PREFERENCES.get((e, loc), 0)
-        gap = best_score[e] - score  # 0 if this IS their best location, positive otherwise
-
-        if gap > 0:
-            for d in DAYS:
-                for h in HOURS:
-                    preference_penalty_terms.append(assign[(e, loc, d, h)] * gap)
-
-# Combined soft objective
-model.Minimize(
-    100 * sum(switches) +
-    10 * sum(preference_penalty_terms) +
-    sum(starts.values())
-)
+    return model, assign
 
 
-# Infeasibility diagnostics
+# --- Infeasibility diagnostics ---
 
-def check_capacity():
+def check_capacity(data):
+    employees = data["employees"]
+    get_staffing_requirement = data["get_staffing_requirement"]
+    employee_max_hours = data["employee_max_hours"]
+
     total_demand = 0
     for loc in LOCATIONS:
         for d in DAYS:
-            min_needed, _ = get_staffing_requirement(loc, d)
-            total_demand += min_needed * len(HOURS)
+            for h in HOURS:
+                min_needed = get_staffing_requirement(loc, d, h)
+                total_demand += min_needed
 
-    total_supply = sum(EMPLOYEE_MAX_HOURS[e] for e in EMPLOYEES)
+    total_supply = sum(employee_max_hours[e] for e in employees)
 
     print(f"Minimum hours demanded: {total_demand}")
     print(f"Maximum hours available: {total_supply}")
@@ -220,14 +218,19 @@ def check_capacity():
     else:
         print(f"✅  {total_supply - total_demand} hours of slack available.")
 
-def check_slot_availability():
+
+def check_slot_availability(data):
+    employees = data["employees"]
+    availability = data["availability"]
+    get_staffing_requirement = data["get_staffing_requirement"]
+
     problems = []
     for loc in LOCATIONS:
         for d in DAYS:
-            min_needed, _ = get_staffing_requirement(loc, d)
             for h in HOURS:
+                min_needed = get_staffing_requirement(loc, d, h)
                 available_count = sum(
-                    1 for e in EMPLOYEES if (d, h) in AVAILABILITY[e]
+                    1 for e in employees if (d, h) in availability[e]
                 )
                 if available_count < min_needed:
                     problems.append(
@@ -241,22 +244,28 @@ def check_slot_availability():
         print("✅  Every slot individually has enough available employees.")
     return problems
 
-def diagnose_infeasibility():
+
+def diagnose_infeasibility(data):
     print("\n--- Running relaxed diagnostic (allows understaffing, minimizes it) ---\n")
 
-    diag_model = cp_model.CpModel()
-    diag_assign = build_assign_vars(diag_model)
-    build_common_constraints(diag_model, diag_assign)
+    employees = data["employees"]
+    availability = data["availability"]
+    employee_max_hours = data["employee_max_hours"]
+    get_staffing_requirement = data["get_staffing_requirement"]
 
-    # Soft staffing constraint: allow understaffing, track it as deficit
+    diag_model = cp_model.CpModel()
+    diag_assign = build_assign_vars(diag_model, employees)
+    build_common_constraints(diag_model, diag_assign, employees, availability, employee_max_hours)
+
     deficits = {}
     for loc in LOCATIONS:
         for d in DAYS:
-            min_needed, max_needed = get_staffing_requirement(loc, d)
             for h in HOURS:
+                min_needed = get_staffing_requirement(loc, d, h)
+                max_needed = min_needed
                 deficit = diag_model.NewIntVar(0, min_needed, f"deficit_{loc}_{d}_{h}")
                 deficits[(loc, d, h)] = deficit
-                total_assigned = sum(diag_assign[(e, loc, d, h)] for e in EMPLOYEES)
+                total_assigned = sum(diag_assign[(e, loc, d, h)] for e in employees)
                 diag_model.Add(total_assigned + deficit >= min_needed)
                 diag_model.Add(total_assigned <= max_needed)
 
@@ -282,84 +291,31 @@ def diagnose_infeasibility():
 
 # --- Solve ---
 
-check_capacity()
-solver = cp_model.CpSolver()
-status = solver.Solve(model)
+def solve_schedule():
+    """Loads fresh data, builds a fresh model, and solves it. Safe to call repeatedly —
+    always reflects the current state of the database."""
+    data = load_fresh_data()
+    employees = data["employees"]
 
-if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-    print("Schedule found:\n")
-    for d in DAYS:
-        print(f"=== {d} ===")
+    check_capacity(data)
+    model, assign = build_main_model(data)
 
-        violated_loc_pref = {}
+    solver = cp_model.CpSolver()
+    status = solver.Solve(model)
 
-        for loc in LOCATIONS:
-            for h in HOURS:
-                workers = [
-                    e for e in EMPLOYEES
-                    if solver.Value(assign[(e, loc, d, h)])
-                ]
-                print(f"  {loc} - {h}:00: {', '.join(workers) if workers else '(none)'}")
-
-        # Check preference violations for this day
-        for e in EMPLOYEES:
-            preferred = LOCATION_PREFERENCE[e]
-
+    if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        schedule = {d: {loc: {} for loc in LOCATIONS} for d in DAYS}
+        for d in DAYS:
             for loc in LOCATIONS:
-                if loc == preferred:
-                    continue
-
                 for h in HOURS:
-                    if solver.Value(assign[(e, loc, d, h)]):
-                        violated_loc_pref.setdefault(e, []).append(
-                            f"{h}:00 ({loc})"
-                        )
-                violated = {}
-
-            # Hours worked today at the non-preferred location
-            hours = [
-                h for h in HOURS
-                if solver.Value(assign[(e, loc, d, h)])
-            ]
-
-            if not hours:
-                continue
-
-            # Break into contiguous ranges
-            start = hours[0]
-            prev = hours[0]
-
-            for h in hours[1:] + [None]:
-                if h is None or h != prev + 1:
-                    violated.setdefault(e, []).append(
-                        (loc, start, prev + 1)   # end is exclusive
-                   )
-
-                    if h is not None:
-                        start = h
-
-                if h is not None:
-                    prev = h
-
-    if violated:
-        print("\nLocation preference violations:")
-
-        for e in sorted(violated):
-            print(f"  {e} (prefers {LOCATION_PREFERENCE[e]}):")
-
-            for loc, start, end in violated[e]:
-               print(f"      {start}:00–{end}:00 at {loc}")
-
-        if violated_loc_pref:
-            print("\nLocation preference violations:")
-            for e, shifts in violated_loc_pref.items():
-                print(f"  {e} prefers {LOCATION_PREFERENCE[e]}:")
-                for s in shifts:
-                    print(f"      {s}")
-
-    print()
-        
-else:
-    print("No feasible schedule found.\n")
-    check_slot_availability()
-    diagnose_infeasibility()
+                    workers = [
+                        e for e in employees
+                        if solver.Value(assign[(e, loc, d, h)])
+                    ]
+                    schedule[d][loc][h] = workers
+        return {"feasible": True, "schedule": schedule}
+    else:
+        print("No feasible schedule found.\n")
+        check_slot_availability(data)
+        diagnose_infeasibility(data)
+        return {"feasible": False, "schedule": None}

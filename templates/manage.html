@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Manage Employees</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        table { border-collapse: collapse; width: 100%; max-width: 600px; }
+        th, td { border: 1px solid #999; padding: 6px 10px; text-align: left; }
+        th { background: #eee; }
+        .top-nav { margin-bottom: 20px; }
+        form.inline { display: inline; }
+    </style>
+</head>
+<body>
+    <div class="top-nav">
+        <a href="/">View Schedule</a> | <strong>Manage Employees</strong> | <a href="/staffing">Staffing Requirements</a>
+    </div>
+
+    <h1>Employees</h1>
+    <table>
+        <tr><th>Name</th><th>Max Hours/Week</th><th></th></tr>
+        {% for id, name, max_hours, is_mopper in employees %}
+        <tr>
+            <td>{{ name }}</td>
+            <td>{{ max_hours }}</td>
+            <td>
+                <form class="inline" method="GET" action="/manage/edit/{{ id }}">
+                    <button type="submit">Edit</button>
+                </form>
+                <form class="inline" method="POST" action="/manage/delete/{{ id }}"
+                      onsubmit="return confirm('Delete {{ name }}? This cannot be undone.');">
+                    <button
+                        type="submit"
+                        style="background:#f8d7da; border:1px solid #f1aeb5; color:#842029;">
+                        Delete
+                    </button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+
+    <h2>Add New Employee</h2>
+    <form method="POST" action="/manage/add">
+        <label>Name: <input type="text" name="name" required></label><br><br>
+        <label>Max hours/week: <input type="number" name="max_hours" value="40" min="0" max="80"></label><br><br>
+        <button type="submit">Add Employee</button>
+    </form>
+</body>
+</html>
