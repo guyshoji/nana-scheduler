@@ -193,8 +193,9 @@ def build_main_model(data):
 
     model.Minimize(
         100 * sum(switches) +
-        10 * sum(preference_penalty_terms) +
-        sum(starts.values())
+        20 * sum(preference_penalty_terms) +
+        20 * sum(starts.values()) + 
+        10 * sum(short_shift_penalties)
     )
 
     return model, assign
@@ -323,7 +324,7 @@ def solve_schedule():
 
     model, assign = build_main_model(data)
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 10.0  # limit solve time
+    solver.parameters.max_time_in_seconds = 30.0  # limit solve time
     solver.parameters.num_search_workers = 4  # use multiple threads
     status = solver.Solve(model)
 
