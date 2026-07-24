@@ -1,5 +1,6 @@
 import sys
-sys.path.append("src/db")
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), "db"))
 from data_access import (
     load_employees, load_availability, load_staffing_requirements,
     load_location_preferences, load_moppers,
