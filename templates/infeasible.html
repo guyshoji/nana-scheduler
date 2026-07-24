@@ -1,11 +1,172 @@
 <!DOCTYPE html>
 <html>
-<head><title>Schedule Unavailable</title></head>
-<body style="font-family: Arial, sans-serif; margin: 40px;">
-    <div class="top-nav">
-        <strong>View Schedule</strong> | <a href="/manage">Manage Employees</a> | <a href="/staffing">Staffing Requirements</a>
+<head>
+    <title>Schedule Unavailable</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 30px; max-width: 900px; }
+        h1 { color: #c0392b; }
+        h2 { margin-top: 30px; border-bottom: 1px solid #ddd; padding-bottom: 6px; }
+        h3 { margin-top: 20px; color: #555; }
+
+        .summary-box {
+            background: #fdf3f2;
+            border: 1px solid #e8b4b0;
+            border-radius: 6px;
+            padding: 16px 20px;
+            margin: 16px 0;
+        }
+        .summary-box.ok {
+            background: #f2fdf3;
+            border-color: #b0e8b4;
+        }
+        .summary-stat {
+            font-size: 15px;
+            margin: 6px 0;
+        }
+        .summary-stat span {
+            font-weight: bold;
+        }
+        .shortfall { color: #c0392b; }
+        .ok-text { color: #27ae60; }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-top: 10px;
+            font-size: 13px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 5px 10px;
+            text-align: left;
+        }
+        th { background: #f5f5f5; }
+        tr:hover { background: #fafafa; }
+
+        .deficit-group { margin-bottom: 24px; }
+        .deficit-header {
+            font-weight: bold;
+            font-size: 14px;
+            margin-bottom: 6px;
+            color: #333;
+        }
+        .shortage-pill {
+            display: inline-block;
+            background: #e74c3c;
+            color: white;
+            border-radius: 10px;
+            padding: 1px 8px;
+            font-size: 12px;
+            margin-left: 6px;
+        }
+
+        .nav { margin-bottom: 24px; }
+        .nav a { margin-right: 12px; }
+    </style>
+</head>
+<body>
+    <div class="nav">
+        <a href="/manage">Manage Employees</a>| <a href="/staffing">Staffing Requirements</a>
     </div>
-    <h1>No feasible schedule could be generated.</h1>
-    <p>Check the terminal output for details on staffing shortages.</p>
+
+    <h1>No feasible schedule could be generated</h1>
+    <p>The current employee availability and staffing requirements cannot be satisfied simultaneously.
+    The diagnostics below show exactly where the shortfalls are.</p>
+
+    {# --- Capacity summary --- #}
+    <h2>Capacity Overview</h2>
+    {% set cap = diagnostics.capacity %}
+    <div class="summary-box {% if cap.shortfall == 0 %}ok{% endif %}">
+        <div class="summary-stat">Total person-hours demanded (minimum staffing): <span>{{ cap.total_demand }}</span></div>
+        <div class="summary-stat">Total person-hours available (all employees × max hours): <span>{{ cap.total_supply }}</span></div>
+        {% if cap.shortfall > 0 %}
+            <div class="summary-stat shortfall">
+                ⚠️ Raw capacity shortfall: <span>{{ cap.shortfall }} hours</span> —
+                even with perfect scheduling, there aren't enough total staff hours to meet minimum requirements.
+                Add more employees or increase existing employees' max hours to resolve this.
+            </div>
+        {% else %}
+            <div class="summary-stat ok-text">
+                ✅ Total capacity is sufficient ({{ cap.slack }} hours of slack) —
+                the problem is availability conflicts, not raw headcount. See below.
+            </div>
+        {% endif %}
+    </div>
+
+    {# --- Slot-level availability shortages --- #}
+    {% if diagnostics.slot_shortages %}
+    <h2>Slot-Level Availability Gaps</h2>
+    <p>These specific time slots don't have enough employees who have marked themselves available,
+    regardless of other constraints. Each of these must be resolved by updating employee availability
+    or reducing staffing requirements.</p>
+    <table>
+        <tr>
+            <th>Location</th>
+            <th>Day</th>
+            <th>Hour</th>
+            <th>Needed</th>
+            <th>Available</th>
+            <th>Gap</th>
+        </tr>
+        {% for s in diagnostics.slot_shortages %}
+        <tr>
+            <td>{{ s.location }}</td>
+            <td>{{ s.day }}</td>
+            <td>{{ s.hour | format_hour }}</td>
+            <td>{{ s.needed }}</td>
+            <td>{{ s.available }}</td>
+            <td><span class="shortage-pill">-{{ s.gap }}</span></td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% else %}
+    <h2>Slot-Level Availability</h2>
+    <div class="summary-box ok">
+        <div class="summary-stat ok-text">✅ Every individual time slot has enough available employees —
+        the conflict is combinatorial (employees are needed in multiple places at once, or hour caps are exhausted).</div>
+    </div>
+    {% endif %}
+
+    {# --- Relaxed model deficits --- #}
+    <h2>Best Possible Schedule — Remaining Shortfalls</h2>
+    <p>Even after relaxing the minimum staffing requirement and finding the best possible schedule,
+    <strong>{{ diagnostics.total_deficit }} person-hour{{ 's' if diagnostics.total_deficit != 1 }}</strong>
+    of understaffing remain. These are the specific slots that cannot be covered:</p>
+
+    {% if diagnostics.deficit_by_location_day %}
+        {% for group in diagnostics.deficit_by_location_day %}
+        <div class="deficit-group">
+            <div class="deficit-header">
+                {{ group.location }} — {{ group.day }}
+                <span class="shortage-pill">{{ group.total }} short</span>
+            </div>
+            <table>
+                <tr><th>Hour</th><th>Short by</th></tr>
+                {% for slot in group.slots %}
+                <tr>
+                    <td>{{ slot.hour | format_hour }}–{{ (slot.hour + 1) | format_hour }}</td>
+                    <td><span class="shortage-pill">{{ slot.shortage }} {{ 'person' if slot.shortage == 1 else 'people' }}</span></td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+        {% endfor %}
+    {% else %}
+        <div class="summary-box ok">
+            <div class="summary-stat ok-text">✅ The relaxed model found no deficits — this suggests
+            a bug in the main model's constraints. Check model.py.</div>
+        </div>
+    {% endif %}
+
+    <h2>How to fix this</h2>
+    <ul>
+        {% if diagnostics.capacity.shortfall > 0 %}
+        <li><strong>Add more employees</strong> or increase existing employees' maximum weekly hours under <a href="/manage">Manage Employees</a>.</li>
+        {% endif %}
+        {% if diagnostics.slot_shortages %}
+        <li><strong>Expand availability</strong> for employees during the flagged slots under <a href="/manage">Manage Employees</a>.</li>
+        {% endif %}
+        <li><strong>Reduce staffing requirements</strong> for the flagged locations/hours under <a href="/staffing">Staffing Requirements</a>.</li>
+    </ul>
 </body>
 </html>

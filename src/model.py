@@ -292,17 +292,34 @@ def diagnose_infeasibility(data):
 # --- Solve ---
 
 def solve_schedule():
-    """Loads fresh data, builds a fresh model, and solves it. Safe to call repeatedly —
-    always reflects the current state of the database."""
+    """Loads fresh data, builds a fresh model, solves it, and returns results
+    including structured diagnostic data if infeasible."""
     data = load_fresh_data()
     employees = data["employees"]
+    get_staffing_requirement = data["get_staffing_requirement"]
+    availability = data["availability"]
+    employee_max_hours = data["employee_max_hours"]
 
-    check_capacity(data)
+    # --- Capacity check ---
+    total_demand = 0
+    for loc in LOCATIONS:
+        for d in DAYS:
+            for h in HOURS:
+                min_needed = get_staffing_requirement(loc, d, h)
+                total_demand += min_needed
+
+    total_supply = sum(employee_max_hours[e] for e in employees)
+    capacity = {
+        "total_demand": total_demand,
+        "total_supply": total_supply,
+        "shortfall": max(0, total_demand - total_supply),
+        "slack": max(0, total_supply - total_demand),
+    }
+
     model, assign = build_main_model(data)
-
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 10
-    solver.parameters.num_search_workers = 8
+    solver.parameters.max_time_in_seconds = 10.0  # limit solve time
+    solver.parameters.num_search_workers = 4  # use multiple threads
     status = solver.Solve(model)
 
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -316,8 +333,82 @@ def solve_schedule():
                     ]
                     schedule[d][loc][h] = workers
         return {"feasible": True, "schedule": schedule}
-    else:
-        print("No feasible schedule found.\n")
-        check_slot_availability(data)
-        diagnose_infeasibility(data)
-        return {"feasible": False, "schedule": None}
+
+    # --- Infeasible: run diagnostics and return structured data ---
+
+    # Slot-level availability check
+    slot_shortages = []
+    for loc in LOCATIONS:
+        for d in DAYS:
+            for h in HOURS:
+                min_needed = get_staffing_requirement(loc, d, h)
+                available_count = sum(
+                    1 for e in employees if (d, h) in availability[e]
+                )
+                if available_count < min_needed:
+                    slot_shortages.append({
+                        "location": loc,
+                        "day": d,
+                        "hour": h,
+                        "needed": min_needed,
+                        "available": available_count,
+                        "gap": min_needed - available_count,
+                    })
+
+    # Relaxed model: find minimum understaffing
+    diag_model = cp_model.CpModel()
+    diag_assign = build_assign_vars(diag_model, employees)
+    build_common_constraints(
+        diag_model, diag_assign, employees, availability, employee_max_hours
+    )
+
+    deficits = {}
+    for loc in LOCATIONS:
+        for d in DAYS:
+            for h in HOURS:
+                min_needed = get_staffing_requirement(loc, d, h)
+                deficit = diag_model.NewIntVar(0, min_needed, f"deficit_{loc}_{d}_{h}")
+                deficits[(loc, d, h)] = deficit
+                total_assigned = sum(diag_assign[(e, loc, d, h)] for e in employees)
+                diag_model.Add(total_assigned + deficit >= min_needed)
+
+    diag_model.Minimize(sum(deficits.values()))
+    diag_solver = cp_model.CpSolver()
+    diag_solver.Solve(diag_model)
+
+    deficit_slots = []
+    total_deficit = int(diag_solver.ObjectiveValue())
+    for (loc, d, h), var in deficits.items():
+        val = diag_solver.Value(var)
+        if val > 0:
+            deficit_slots.append({
+                "location": loc,
+                "day": d,
+                "hour": h,
+                "shortage": val,
+            })
+
+    # Group deficit slots by (location, day) for cleaner display
+    by_location_day = {}
+    for slot in deficit_slots:
+        key = (slot["location"], slot["day"])
+        by_location_day.setdefault(key, []).append(slot)
+
+    return {
+        "feasible": False,
+        "schedule": None,
+        "diagnostics": {
+            "capacity": capacity,
+            "slot_shortages": slot_shortages,
+            "total_deficit": total_deficit,
+            "deficit_by_location_day": [
+                {
+                    "location": loc,
+                    "day": d,
+                    "slots": slots,
+                    "total": sum(s["shortage"] for s in slots),
+                }
+                for (loc, d), slots in sorted(by_location_day.items())
+            ],
+        }
+    }

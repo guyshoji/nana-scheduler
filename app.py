@@ -110,11 +110,9 @@ def compute_gantt_layout(blocks):
 def index():
     result = solve_schedule()
     if not result["feasible"]:
-        return render_template("infeasible.html")
-
+        return render_template("infeasible.html", diagnostics=result["diagnostics"])
     blocks = build_shift_blocks(result["schedule"])
     gantt = compute_gantt_layout(blocks)
-
     return render_template(
         "schedule.html",
         gantt=gantt,
