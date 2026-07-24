@@ -6,8 +6,14 @@ HOURS = list(range(11, 21))
 
 def seed():
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA foreign_keys = ON")
     cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM employees")
+    if cur.fetchone()[0] > 0:
+        print("Database already has data — aborting seed to avoid overwriting.")
+        conn.close()
+        return
+    
+    conn.execute("PRAGMA foreign_keys = ON")
 
     # Clear existing data so this script is safely re-runnable
     cur.execute("DELETE FROM availability")

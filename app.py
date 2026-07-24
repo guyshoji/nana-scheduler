@@ -1,9 +1,10 @@
 from flask import Flask, render_template, send_file, request, redirect, url_for
 from src.model import solve_schedule, DAYS, LOCATIONS, HOURS
-from src.db.data_access import (set_mopper_status,
+from src.db.data_access import (
     load_employees, add_employee, delete_employee, update_employee,
     get_employee_by_id, set_availability, get_availability_for_employee,
-    set_location_preferences, get_preferences_for_employee
+    set_location_preferences, get_preferences_for_employee,
+    set_mopper_status, load_saved_schedule
 )
 import openpyxl
 from openpyxl.styles import Font, PatternFill
@@ -108,26 +109,39 @@ def compute_gantt_layout(blocks):
 
 @app.route("/")
 def index():
-    result = solve_schedule()
-    if not result["feasible"]:
-        return render_template("infeasible.html", diagnostics=result["diagnostics"])
-    blocks = build_shift_blocks(result["schedule"])
+    saved = load_saved_schedule()
+    if saved is None:
+        return render_template("no_schedule.html")
+    blocks = build_shift_blocks(saved["schedule"])
     gantt = compute_gantt_layout(blocks)
     return render_template(
         "schedule.html",
         gantt=gantt,
         days=DAYS,
         locations=LOCATIONS,
-        hours=HOURS
+        hours=HOURS,
+        generated_at=saved["generated_at"]
     )
+
+@app.route("/generate", methods=["GET", "POST"])
+def generate():
+    if request.method == "GET":
+        return render_template("generate.html")
+    
+     # POST: actually run the solver
+    result = solve_schedule()
+    if result["feasible"]:
+        return redirect(url_for("index"))
+    else:
+        return render_template("infeasible.html", diagnostics=result["diagnostics"])
 
 @app.route("/export")
 def export():
-    result = solve_schedule()
-    if not result["feasible"]:
-        return "No feasible schedule to export.", 400
+    saved = load_saved_schedule()
+    if saved is None:
+        return "No schedule has been generated yet.", 400
 
-    blocks = build_shift_blocks(result["schedule"])
+    blocks = build_shift_blocks(saved["schedule"])
 
     wb = openpyxl.Workbook()
     wb.remove(wb.active)

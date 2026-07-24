@@ -1,6 +1,10 @@
 import sys
 sys.path.append("src/db")
-from data_access import load_employees, load_availability, load_staffing_requirements, load_location_preferences, load_moppers
+from data_access import (
+    load_employees, load_availability, load_staffing_requirements,
+    load_location_preferences, load_moppers,
+    save_schedule
+)
 from ortools.sat.python import cp_model
 
 
@@ -332,6 +336,8 @@ def solve_schedule():
                         if solver.Value(assign[(e, loc, d, h)])
                     ]
                     schedule[d][loc][h] = workers
+        
+        save_schedule(schedule)  # persist to DB
         return {"feasible": True, "schedule": schedule}
 
     # --- Infeasible: run diagnostics and return structured data ---

@@ -30,3 +30,9 @@ CREATE TABLE staffing_requirements (
     min_needed INTEGER NOT NULL,
     max_needed INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS saved_schedule (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    generated_at TEXT NOT NULL,
+    schedule_json TEXT NOT NULL
+);

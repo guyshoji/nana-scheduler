@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Generate Schedule</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 60px auto; max-width: 500px; text-align: center; }
+        h1 { font-size: 22px; }
+        p { color: #555; line-height: 1.6; }
+        .btn {
+            display: inline-block;
+            margin-top: 16px;
+            padding: 12px 28px;
+            background: #4a90d9;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        .btn:hover { background: #357abd; }
+        .back { display: block; margin-top: 16px; font-size: 13px; color: #888; }
+        #loading { display: none; margin-top: 20px; color: #4a90d9; font-size: 15px; }
+    </style>
+</head>
+<body>
+    <h1>Generate New Schedule</h1>
+    <p>This will solve the scheduling problem using current employee
+    availability and staffing requirements. This may take up to 30 seconds.</p>
+
+    <form method="POST" action="/generate" onsubmit="showLoading()">
+        <button class="btn" type="submit">Generate Schedule</button>
+    </form>
+
+    <div id="loading">
+        ⏳ Solving — please wait, this may take up to 30 seconds...
+    </div>
+
+    <a class="btn" href="/" style="background:#eee; color:#333; margin-top:10px;">← Back</a>
+
+    <script>
+    function showLoading() {
+        document.getElementById('loading').style.display = 'block';
+        document.querySelector('button[type=submit]').disabled = true;
+    }
+    </script>
+</body>
+</html>

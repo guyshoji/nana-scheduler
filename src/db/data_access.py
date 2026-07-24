@@ -1,4 +1,6 @@
 import sqlite3
+import json
+from datetime import datetime
 
 DB_PATH = "nana_scheduler.db"
 
@@ -172,3 +174,36 @@ def set_staffing_requirement(location, day, hour, min_needed):
     """, (location, day, hour, min_needed))
     conn.commit()
     conn.close()
+
+def save_schedule(schedule):
+    """Saves the generated schedule to the database, replacing any previous one."""
+    conn = get_connection()
+    conn.execute("DELETE FROM saved_schedule")
+    conn.execute(
+        "INSERT INTO saved_schedule (generated_at, schedule_json) VALUES (?, ?)",
+        (datetime.now().strftime("%Y-%m-%d %H:%M"), json.dumps(schedule))
+    )
+    conn.commit()
+    conn.close()
+
+def load_saved_schedule():
+    """Returns the last saved schedule, or None if none exists."""
+    conn = get_connection()
+    cur = conn.execute(
+        "SELECT generated_at, schedule_json FROM saved_schedule ORDER BY id DESC LIMIT 1"
+    )
+    row = cur.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    generated_at, schedule_json = row
+
+    # schedule_json keys are strings when loaded from JSON —
+    # rebuild the nested dict with correct types
+    raw = json.loads(schedule_json)
+    schedule = {}
+    for d, locs in raw.items():
+        schedule[d] = {}
+        for loc, hours in locs.items():
+            schedule[d][loc] = {int(h): workers for h, workers in hours.items()}
+    return {"generated_at": generated_at, "schedule": schedule}
