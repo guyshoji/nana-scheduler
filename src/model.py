@@ -325,7 +325,7 @@ def solve_schedule():
     model, assign = build_main_model(data)
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = 30.0  # limit solve time
-    solver.parameters.num_search_workers = 4  # use multiple threads
+    solver.parameters.num_search_workers = 8  # use multiple threads
     status = solver.Solve(model)
 
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
