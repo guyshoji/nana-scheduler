@@ -11,6 +11,14 @@
 3. The scheduler will open in your browser automatically at http://127.0.0.1:5001
 4. Do not close the black terminal window while using the scheduler — it is running the app
 
+## How to add to desktop
+1. Right-click `start.bat` inside the `nana-scheduler` folder
+2. Click Send to → Desktop (create shortcut)
+3. Right-click the shortcut → Properties
+4. Click Change Icon
+5. Click Browse, navigate to the `nana-scheduler` folder, select `icon.ico`
+6. Click OK → Apply
+
 ## How to use
 - View Schedule: the home page shows the generated schedule
 - Manage Employees: add/edit/remove employees, set availability and preferences
