@@ -16,7 +16,7 @@
 2. Click Send to → Desktop (create shortcut)
 3. Right-click the shortcut → Properties
 4. Click Change Icon
-5. Click Browse, navigate to the `nana-scheduler` folder, select `icon.ico`
+5. Click Browse, navigate to the `nana-scheduler` folder, select `schedule.ico`
 6. Click OK → Apply
 
 ## How to use
