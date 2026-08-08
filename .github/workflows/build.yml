@@ -29,13 +29,18 @@ jobs:
         run: |
           pyinstaller scheduler.spec
 
-      - name: Create launcher batch file
+      - name: Show dist contents
         run: |
-          echo '@echo off' > dist\NanaScheduler\start.bat
-          echo 'cd /d "%~dp0"' >> dist\NanaScheduler\start.bat
-          echo 'NanaScheduler.exe' >> dist\NanaScheduler\start.bat
-          echo 'timeout /t 2 /nobreak > nul' >> dist\NanaScheduler\start.bat
-          echo 'start http://127.0.0.1:5001' >> dist\NanaScheduler\start.bat
+          Get-ChildItem -Recurse dist | Select-Object FullName
+
+      - name: Create launcher batch file
+        shell: cmd
+        run: |
+          echo @echo off > dist\NanaScheduler\start.bat
+          echo cd /d "%%~dp0" >> dist\NanaScheduler\start.bat
+          echo timeout /t 2 /nobreak ^> nul >> dist\NanaScheduler\start.bat
+          echo start http://127.0.0.1:5001 >> dist\NanaScheduler\start.bat
+          echo NanaScheduler.exe >> dist\NanaScheduler\start.bat
 
       - name: Zip the output
         run: |
@@ -50,7 +55,8 @@ jobs:
           retention-days: 30
 
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+        if:
+startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/NanaScheduler-Windows.zip
