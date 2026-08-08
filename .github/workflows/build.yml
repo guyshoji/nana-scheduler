@@ -1,9 +1,9 @@
 name: Build Windows Installer
 
-"on":
+on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
 
 jobs:
@@ -17,7 +17,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
@@ -26,26 +26,16 @@ jobs:
           pip install pyinstaller
 
       - name: Build with PyInstaller
-        run: |
-          pyinstaller scheduler.spec
+        run: pyinstaller scheduler.spec
 
       - name: Show dist contents
-        run: |
-          Get-ChildItem -Recurse dist | Select-Object FullName
+        run: Get-ChildItem -Recurse dist | Select-Object FullName
 
-      - name: Create launcher batch file
-        shell: cmd
-        run: |
-          echo @echo off > dist\NanaScheduler\start.bat
-          echo cd /d "%%~dp0" >> dist\NanaScheduler\start.bat
-          echo timeout /t 2 /nobreak ^> nul >> dist\NanaScheduler\start.bat
-          echo start http://127.0.0.1:5001 >> dist\NanaScheduler\start.bat
-          echo NanaScheduler.exe >> dist\NanaScheduler\start.bat
+      - name: Create launcher
+        run: python create_launcher.py
 
       - name: Zip the output
-        run: |
-          cd dist
-          Compress-Archive -Path NanaScheduler -DestinationPath NanaScheduler-Windows.zip
+        run: Compress-Archive -Path dist/NanaScheduler -DestinationPath dist/NanaScheduler-Windows.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -55,8 +45,7 @@ jobs:
           retention-days: 30
 
       - name: Create GitHub Release
-        if:
-startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/NanaScheduler-Windows.zip
