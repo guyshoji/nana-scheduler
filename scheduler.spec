@@ -17,11 +17,15 @@ a = Analysis(
         'jinja2',
         'werkzeug',
         'click',
+        'pandas',
+        'numpy',
+        'python_dateutil',
+        'six',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['pandas', 'matplotlib', 'tkinter'],
+    excludes=[],
     noarchive=False,
 )
 
